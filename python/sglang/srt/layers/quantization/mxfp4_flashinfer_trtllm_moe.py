@@ -85,15 +85,16 @@ class Mxfp4FlashinferTrtllmMoEMethod:
         assert (
             swiglu_limit is not None
         ), f"swiglu_limit must be non-None for DeepSeek V4 (got {swiglu_limit!r})"
-        self._gemm1_clamp_limit_tensor = (
-            torch.full(
-                (layer.num_local_experts,),
-                swiglu_limit,
-                dtype=torch.float32,
-                device=layer.w13_weight.device,
-            )
-            if swiglu_limit is not None
-            else None
+        self._gemm1_clamp_limit_tensor = torch.full(
+            (layer.num_local_experts,),
+            swiglu_limit,
+            dtype=torch.float32,
+            device=layer.w13_weight.device,
+        )
+        layer.register_buffer(
+            "_gemm1_clamp_limit_tensor",
+            self._gemm1_clamp_limit_tensor,
+            persistent=False,
         )
 
     def create_weights(
