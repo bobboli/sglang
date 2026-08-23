@@ -2220,6 +2220,14 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         # Load the reconstructed tensors using the standard method
         self.model.load_weights(reconstructed_tensors)
 
+        # The flattened tensor can be backed by CUDA IPC memory owned by the
+        # training process.  Weight loaders enqueue device-to-device copies,
+        # while the RPC response releases the producer-side IPC buffer.  Make
+        # the copies complete before returning so a following bucket cannot
+        # reuse that storage and corrupt the just-loaded weights.
+        if self.device == "cuda":
+            torch.cuda.synchronize()
+
         return True, "Success"
 
     def get_weights_by_name(

@@ -505,6 +505,19 @@ class Indexer(MultiPlatformOp):
         if _use_aiter and _is_gfx95_supported and isinstance(x, tuple) and len(x) == 3:
             x = x[2]
         if _is_cuda:
+            if get_global_server_args().enable_deterministic_inference:
+                flat_input = x.reshape(-1, x.shape[-1]).contiguous()
+                output = torch.empty(
+                    (flat_input.shape[0], self.weights_proj.weight.shape[0]),
+                    dtype=torch.float32,
+                    device=flat_input.device,
+                )
+                deep_gemm_wrapper.gemm_nt_bf16bf16f32(
+                    flat_input,
+                    self.weights_proj.weight.contiguous(),
+                    output,
+                )
+                return output.view(*x.shape[:-1], self.weights_proj.weight.shape[0])
             return torch.mm(x, self.weights_proj.weight.t(), out_dtype=torch.float32)
 
         weights, _ = self.weights_proj(x)
