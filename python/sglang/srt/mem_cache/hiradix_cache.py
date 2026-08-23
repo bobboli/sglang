@@ -1034,9 +1034,7 @@ class HiRadixCache(RadixCache):
             self._update_leaf_status(node)
             self._update_host_leaf_status(node)
             if node.parent is None:
-                assert (
-                    node is self.root_node
-                ), f"This request holds the node from another tree"
+                break
             node = node.parent
         return DecLockRefResult(delta=delta)
 
@@ -1142,6 +1140,7 @@ class HiRadixCache(RadixCache):
         self._update_host_leaf_status(node)
         # update leaf status for the parent because the node is evicted
         self._update_leaf_status(node.parent)
+        self._update_host_leaf_status(node.parent)
         return num_evicted
 
     def _evict_backuped(self, node: TreeNode):

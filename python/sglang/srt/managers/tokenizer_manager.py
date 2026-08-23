@@ -2408,25 +2408,23 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
             priority = getattr(state.obj, "priority", None)
             if priority is not None:
                 labels["priority"] = str(priority)
-        if (
-            not state.ttft_observed
-            and self.disaggregation_mode != DisaggregationMode.PREFILL
-        ):
+        if not state.ttft_observed:
             state.ttft_observed = True
             state.last_completion_tokens = completion_tokens
-            self.metrics_collector.observe_time_to_first_token(
-                labels, state.time_stats.get_first_token_latency()
-            )
+            if self.disaggregation_mode != DisaggregationMode.PREFILL:
+                self.metrics_collector.observe_time_to_first_token(
+                    labels, state.time_stats.get_first_token_latency()
+                )
         else:
             num_new_tokens = completion_tokens - state.last_completion_tokens
-            if num_new_tokens:
+            if num_new_tokens > 0:
                 self.metrics_collector.observe_inter_token_latency(
                     labels,
                     state.time_stats.get_interval(),
                     num_new_tokens,
                 )
                 state.time_stats.set_last_time()
-                state.last_completion_tokens = completion_tokens
+            state.last_completion_tokens = completion_tokens
 
         if state.finished:
             # Get detailed cache breakdown if available

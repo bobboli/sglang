@@ -1715,6 +1715,16 @@ class ResumeMemoryOccupationReqOutput(BaseReq, kw_only=True):
     pass
 
 
+class PostProcessWeightsReqInput(BaseReq, kw_only=True):
+    restore_weights_before_load: bool = False
+    post_process_quantization: bool = False
+
+
+class PostProcessWeightsReqOutput(BaseReq, kw_only=True):
+    success: bool
+    message: str
+
+
 class CheckWeightsReqInput(BaseReq, kw_only=True):
     action: str = "checksum"
     allow_quant_error: bool = False
@@ -2030,7 +2040,7 @@ class GetLoadsReqInput(BaseReq, kw_only=True):
     """Request for /v1/loads endpoint."""
 
     VALID_SECTIONS = frozenset(
-        {"core", "memory", "spec", "lora", "disagg", "queues", "all"}
+        {"core", "memory", "spec", "lora", "disagg", "queues", "inflight", "all"}
     )
 
     include: List[str] = msgspec.field(default_factory=lambda: ["all"])
@@ -2074,6 +2084,9 @@ class GetLoadsReqOutput(BaseReq, kw_only=True):
     lora: Optional[LoRAMetrics] = None
     disaggregation: Optional[DisaggregationMetrics] = None
     queues: Optional[QueueMetrics] = None
+    # Per-request breakdown of every queue, only populated when "inflight" or
+    # "all" is requested.
+    inflight: Optional[List[Dict[str, Any]]] = None
 
 
 class SetInjectDumpMetadataReqInput(BaseReq, kw_only=True):

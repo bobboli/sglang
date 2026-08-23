@@ -48,6 +48,8 @@ from sglang.srt.managers.io_struct import (
     LoadLoRAAdapterReqOutput,
     LoRAUpdateOutput,
     OpenSessionReqInput,
+    PostProcessWeightsReqInput,
+    PostProcessWeightsReqOutput,
     ProfileReq,
     ProfileReqOutput,
     ProfileReqType,
@@ -99,6 +101,7 @@ _COMMUNICATOR_SPECS = [
     ("send_weights_to_remote_instance", SendWeightsToRemoteInstanceReqOutput),
     ("update_weights_from_tensor", UpdateWeightsFromTensorReqOutput),
     ("update_weights_from_ipc", UpdateWeightsFromIPCReqOutput),
+    ("post_process_weights", PostProcessWeightsReqOutput),
     ("get_weights_by_name", GetWeightsByNameReqOutput),
     ("release_memory_occupation", ReleaseMemoryOccupationReqOutput),
     ("resume_memory_occupation", ResumeMemoryOccupationReqOutput),
@@ -746,6 +749,16 @@ class TokenizerControlMixin:
     ):
         self.auto_create_handle_loop()
         await self.resume_memory_occupation_communicator(obj)
+
+    async def post_process_weights(
+        self: TokenizerManager,
+        obj: PostProcessWeightsReqInput,
+        request: Optional[fastapi.Request] = None,
+    ) -> Tuple[bool, str]:
+        self.auto_create_handle_loop()
+        async with self.model_update_lock.writer_lock:
+            results = await self.post_process_weights_communicator(obj)
+        return FanOutCommunicator.merge_results(results)
 
     async def check_weights(
         self: TokenizerManager,

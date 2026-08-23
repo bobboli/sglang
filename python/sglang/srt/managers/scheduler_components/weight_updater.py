@@ -26,6 +26,8 @@ from sglang.srt.managers.io_struct import (
     GetWeightsByNameReqOutput,
     InitWeightsUpdateGroupReqInput,
     InitWeightsUpdateGroupReqOutput,
+    PostProcessWeightsReqInput,
+    PostProcessWeightsReqOutput,
     ReleaseMemoryOccupationReqInput,
     ReleaseMemoryOccupationReqOutput,
     ResumeMemoryOccupationReqInput,
@@ -180,6 +182,19 @@ class SchedulerWeightUpdaterManager:
     def get_weights_by_name(self, recv_req: GetWeightsByNameReqInput):
         parameter = self.tp_worker.get_weights_by_name(recv_req)
         return GetWeightsByNameReqOutput(parameter=parameter)
+
+    def post_process_weights(self, recv_req: PostProcessWeightsReqInput):
+        success, message = self.tp_worker.post_process_weights(recv_req)
+        if (
+            success
+            and self.draft_worker is not None
+            and hasattr(self.draft_worker, "post_process_weights")
+        ):
+            success, message = self.draft_worker.post_process_weights(recv_req)
+        if not success:
+            logger.error(message)
+        torch.distributed.barrier(group=self.tp_cpu_group)
+        return PostProcessWeightsReqOutput(success=success, message=message)
 
     def release_memory_occupation(self, recv_req: ReleaseMemoryOccupationReqInput):
         assert (
