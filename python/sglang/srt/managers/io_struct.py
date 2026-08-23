@@ -1189,6 +1189,7 @@ TopLogprobValues = Optional[List[Optional[List[Optional[List[float]]]]]]
 TopLogprobIndices = Optional[List[Optional[List[Optional[List[int]]]]]]
 TokenIdsLogprobValues = Optional[List[Optional[List[Optional[List[float]]]]]]
 TokenIdsLogprobIndices = Optional[List[Optional[List[Optional[List[int]]]]]]
+TopPTokenIds = Optional[List[Optional[List[Optional[List[int]]]]]]
 HiddenStateChunk = List[Optional[Union[float, List[float]]]]
 OutputHiddenStates = Optional[List[Optional[List[HiddenStateChunk]]]]
 CachedTokensDetails = Dict[str, Union[int, str]]
@@ -1229,6 +1230,7 @@ class BatchTokenIDOutput(BaseBatchReq, kw_only=True):
     input_token_ids_logprobs_idx: TokenIdsLogprobIndices
     output_token_ids_logprobs_val: TokenIdsLogprobValues
     output_token_ids_logprobs_idx: TokenIdsLogprobIndices
+    output_top_p_token_ids: TopPTokenIds
     output_token_entropy_val: Optional[List[Optional[float]]]
 
     # Hidden states
@@ -1305,6 +1307,7 @@ class BatchStrOutput(BaseBatchReq, kw_only=True):
     input_token_ids_logprobs_idx: TokenIdsLogprobIndices
     output_token_ids_logprobs_val: TokenIdsLogprobValues
     output_token_ids_logprobs_idx: TokenIdsLogprobIndices
+    output_top_p_token_ids: TopPTokenIds
     output_token_entropy_val: Optional[List[Optional[float]]]
 
     # Hidden states

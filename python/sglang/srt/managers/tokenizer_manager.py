@@ -212,6 +212,7 @@ class ReqState:
     output_top_logprobs: List[Any] = dataclasses.field(default_factory=list)
     input_token_ids_logprobs: List[Any] = dataclasses.field(default_factory=list)
     output_token_ids_logprobs: List[Any] = dataclasses.field(default_factory=list)
+    output_top_p_token_ids: List[List[int]] = dataclasses.field(default_factory=list)
     customized_info_accumulated: Dict[str, List[Any]] = dataclasses.field(
         default_factory=dict
     )
@@ -231,6 +232,21 @@ def _slice_streaming_output_meta_info(
         streaming_meta_info_keys.update(customized_info_keys)
     for key in meta_info.keys() & streaming_meta_info_keys:
         meta_info[key] = meta_info[key][last_output_offset:]
+
+
+def _b64_encode_int32(values: List[int]) -> str:
+    int32_values = array("i", values)
+    assert int32_values.itemsize == 4
+    return pybase64.b64encode(int32_values.tobytes()).decode("utf-8")
+
+
+def _encode_top_p_token_ids(rows: List[List[int]]) -> Tuple[str, str]:
+    token_ids = []
+    offsets = [0]
+    for row in rows:
+        token_ids.extend(int(token_id) for token_id in row)
+        offsets.append(len(token_ids))
+    return _b64_encode_int32(token_ids), _b64_encode_int32(offsets)
 
 
 class InputFormat(Enum):
@@ -2223,6 +2239,11 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
             meta_info["input_token_ids_logprobs"] = state.input_token_ids_logprobs
             meta_info["output_token_ids_logprobs"] = state.output_token_ids_logprobs
 
+        if state.output_top_p_token_ids and meta_info.get("finish_reason") is not None:
+            token_ids, offsets = _encode_top_p_token_ids(state.output_top_p_token_ids)
+            meta_info["top_p_token_ids"] = token_ids
+            meta_info["top_p_token_offsets"] = offsets
+
     def convert_logprob_style(
         self,
         meta_info: dict,
@@ -2282,6 +2303,13 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
             state.output_token_ids_logprobs_idx.extend(
                 recv_obj.output_token_ids_logprobs_idx[recv_obj_index]
             )
+
+        output_top_p_token_ids = getattr(recv_obj, "output_top_p_token_ids", None)
+        if (
+            output_top_p_token_ids is not None
+            and len(output_top_p_token_ids) > recv_obj_index
+        ):
+            state.output_top_p_token_ids.extend(output_top_p_token_ids[recv_obj_index])
 
         self.add_logprob_to_meta_info(
             meta_info,
