@@ -53,6 +53,8 @@ from sglang.srt.managers.io_struct import (
     ProfileReq,
     ProfileReqOutput,
     ProfileReqType,
+    PullWeightsReqInput,
+    PullWeightsReqOutput,
     ReleaseMemoryOccupationReqInput,
     ReleaseMemoryOccupationReqOutput,
     RemoveExternalCorpusReqInput,
@@ -102,6 +104,7 @@ _COMMUNICATOR_SPECS = [
     ("update_weights_from_tensor", UpdateWeightsFromTensorReqOutput),
     ("update_weights_from_ipc", UpdateWeightsFromIPCReqOutput),
     ("post_process_weights", PostProcessWeightsReqOutput),
+    ("pull_weights", PullWeightsReqOutput),
     ("get_weights_by_name", GetWeightsByNameReqOutput),
     ("release_memory_occupation", ReleaseMemoryOccupationReqOutput),
     ("resume_memory_occupation", ResumeMemoryOccupationReqOutput),
@@ -758,6 +761,15 @@ class TokenizerControlMixin:
         self.auto_create_handle_loop()
         async with self.model_update_lock.writer_lock:
             results = await self.post_process_weights_communicator(obj)
+        return FanOutCommunicator.merge_results(results)
+
+    async def pull_weights(
+        self: TokenizerManager,
+        obj: PullWeightsReqInput,
+        request: Optional[fastapi.Request] = None,
+    ) -> Tuple[bool, str]:
+        self.auto_create_handle_loop()
+        results = await self.pull_weights_communicator(obj)
         return FanOutCommunicator.merge_results(results)
 
     async def check_weights(

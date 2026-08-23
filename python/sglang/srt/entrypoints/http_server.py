@@ -129,6 +129,7 @@ from sglang.srt.managers.io_struct import (
     PauseGenerationReqInput,
     PostProcessWeightsReqInput,
     ProfileReq,
+    PullWeightsReqInput,
     ReleaseMemoryOccupationReqInput,
     ResumeMemoryOccupationReqInput,
     SendWeightsToRemoteInstanceReqInput,
@@ -1337,6 +1338,21 @@ async def post_process_weights(req: PostProcessWeightsReqInput, request: Request
     success, message = await _global_state.tokenizer_manager.post_process_weights(
         req, request
     )
+
+    content = {"success": success, "message": message}
+    return ORJSONResponse(
+        content, status_code=200 if success else HTTPStatus.BAD_REQUEST
+    )
+
+
+@app.post("/pull_weights")
+@auth_level(AuthLevel.ADMIN_OPTIONAL)
+async def pull_weights(
+    obj: Annotated[PullWeightsReqInput, Body()], request: Request
+):
+    """Have every host of this deployment pull published weight deltas into its
+    local checkpoint (materialized from the model path on first use)."""
+    success, message = await _global_state.tokenizer_manager.pull_weights(obj, request)
 
     content = {"success": success, "message": message}
     return ORJSONResponse(
