@@ -730,6 +730,19 @@ class HiRadixCache(RadixCache):
         self.evictable_host_leaves.clear()
         super().reset()
 
+    def release_memory_occupation(self) -> None:
+        if self.enable_storage:
+            logger.warning(
+                "Skipping HiCache host memory release while storage backend is enabled."
+            )
+            return
+        self.cache_controller.mem_pool_host.release_memory_occupation()
+
+    def resume_memory_occupation(self) -> None:
+        if self.enable_storage:
+            return
+        self.cache_controller.mem_pool_host.resume_memory_occupation()
+
     def get_height(self, node: TreeNode):
         height = 0
         while node != self.root_node:

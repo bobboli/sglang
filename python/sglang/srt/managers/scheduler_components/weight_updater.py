@@ -206,10 +206,18 @@ class SchedulerWeightUpdaterManager:
         if tags is None or len(tags) == 0:
             tags = GPU_MEMORY_ALL_TYPES
 
+        tags_to_offload = []
         for tag in tags:
+            if tag not in self.offload_tags and tag not in tags_to_offload:
+                tags_to_offload.append(tag)
+
+        if not tags_to_offload:
+            return ReleaseMemoryOccupationReqOutput()
+
+        for tag in tags_to_offload:
             self.offload_tags.add(tag)
 
-        if GPU_MEMORY_TYPE_KV_CACHE in tags:
+        if GPU_MEMORY_TYPE_KV_CACHE in tags_to_offload:
             scheduler = self.scheduler
             if scheduler is not None:
                 if scheduler.disaggregation_mode == DisaggregationMode.DECODE:
@@ -223,18 +231,24 @@ class SchedulerWeightUpdaterManager:
                 elif scheduler.disaggregation_mode == DisaggregationMode.PREFILL:
                     queue = getattr(scheduler, "disagg_prefill_bootstrap_queue", None)
                     if queue is not None:
-                        queue.release_memory_occupation()
+                            queue.release_memory_occupation()
             self.memory_saver_adapter.pause(GPU_MEMORY_TYPE_KV_CACHE)
             self.flush_cache()
+            if scheduler is not None and scheduler.server_args.release_hicache:
+                release = getattr(
+                    scheduler.tree_cache, "release_memory_occupation", None
+                )
+                if release is not None:
+                    release()
 
-        if GPU_MEMORY_TYPE_WEIGHTS in tags:
+        if GPU_MEMORY_TYPE_WEIGHTS in tags_to_offload:
             self.stashed_model_static_state = _export_static_state(
                 self.tp_worker.model_runner.model
             )
             torch.distributed.barrier(self.tp_cpu_group)
             self.memory_saver_adapter.pause(GPU_MEMORY_TYPE_WEIGHTS)
 
-        if GPU_MEMORY_TYPE_CUDA_GRAPH in tags:
+        if GPU_MEMORY_TYPE_CUDA_GRAPH in tags_to_offload:
             self.memory_saver_adapter.pause(GPU_MEMORY_TYPE_CUDA_GRAPH)
 
         torch.get_device_module().synchronize()
@@ -247,13 +261,21 @@ class SchedulerWeightUpdaterManager:
         if tags is None or len(tags) == 0:
             tags = GPU_MEMORY_ALL_TYPES
 
+        tags_to_resume = []
         for tag in tags:
+            if tag in self.offload_tags and tag not in tags_to_resume:
+                tags_to_resume.append(tag)
+
+        if not tags_to_resume:
+            return ResumeMemoryOccupationReqOutput()
+
+        for tag in tags_to_resume:
             self.offload_tags.remove(tag)
 
-        if GPU_MEMORY_TYPE_CUDA_GRAPH in tags:
+        if GPU_MEMORY_TYPE_CUDA_GRAPH in tags_to_resume:
             self.memory_saver_adapter.resume(GPU_MEMORY_TYPE_CUDA_GRAPH)
 
-        if GPU_MEMORY_TYPE_WEIGHTS in tags:
+        if GPU_MEMORY_TYPE_WEIGHTS in tags_to_resume:
             self.memory_saver_adapter.resume(GPU_MEMORY_TYPE_WEIGHTS)
             torch.distributed.barrier(self.tp_cpu_group)
             _import_static_state(
@@ -262,10 +284,16 @@ class SchedulerWeightUpdaterManager:
             )
             del self.stashed_model_static_state
 
-        if GPU_MEMORY_TYPE_KV_CACHE in tags:
+        if GPU_MEMORY_TYPE_KV_CACHE in tags_to_resume:
             self.memory_saver_adapter.resume(GPU_MEMORY_TYPE_KV_CACHE)
             scheduler = self.scheduler
             if scheduler is not None:
+                if scheduler.server_args.release_hicache:
+                    resume = getattr(
+                        scheduler.tree_cache, "resume_memory_occupation", None
+                    )
+                    if resume is not None:
+                        resume()
                 if scheduler.disaggregation_mode == DisaggregationMode.DECODE:
                     for queue_name in (
                         "disagg_decode_transfer_queue",

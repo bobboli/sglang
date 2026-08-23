@@ -2052,6 +2052,10 @@ class ServerArgs:
         Optional[str],
         "A dictionary in JSON string format, or a string starting with a leading '@' and a config file in JSON/YAML/TOML format, containing extra configuration for the storage backend.",
     ] = None
+    release_hicache: A[
+        bool,
+        "Release hierarchical cache host memory during release_memory_occupation.",
+    ] = False
 
     # -------------------------------------------------------------------------
     # Hierarchical sparse attention
