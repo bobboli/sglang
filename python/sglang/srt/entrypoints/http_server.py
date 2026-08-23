@@ -1333,10 +1333,12 @@ async def update_weights_from_ipc(
 
 @app.post("/post_process_weights")
 @auth_level(AuthLevel.ADMIN_OPTIONAL)
-async def post_process_weights(req: PostProcessWeightsReqInput, request: Request):
+async def post_process_weights(
+    obj: Annotated[PostProcessWeightsReqInput, Body()], request: Request
+):
     """Optional post-processing for updated weights, e.g. quantization packing."""
     success, message = await _global_state.tokenizer_manager.post_process_weights(
-        req, request
+        obj, request
     )
 
     content = {"success": success, "message": message}
