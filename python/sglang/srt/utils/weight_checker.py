@@ -1,7 +1,7 @@
 import hashlib
 import logging
 import time
-from typing import Dict, Iterable, NamedTuple, Optional, Set
+from typing import Dict, Iterable, List, NamedTuple, Optional, Set
 
 import torch
 import torch.distributed as dist
@@ -68,43 +68,61 @@ class WeightChecker:
         self._model_runner = model_runner
         self._snapshot_tensors = None
 
-    def handle(self, action: str, allow_quant_error: bool = False) -> Optional[Dict]:
+    def handle(
+        self,
+        action: str,
+        allow_quant_error: bool = False,
+        skip_tensor_list: Optional[List[str]] = None,
+    ) -> Optional[Dict]:
+        if skip_tensor_list is not None and any(
+            not pattern for pattern in skip_tensor_list
+        ):
+            raise ValueError("skip_tensor_list entries must be non-empty")
         logger.info(
-            f"[WeightChecker] handle action={action} allow_quant_error={allow_quant_error}"
+            f"[WeightChecker] handle action={action} "
+            f"allow_quant_error={allow_quant_error} skip_tensor_list={skip_tensor_list}"
         )
         if action == "snapshot":
-            return self._snapshot()
+            return self._snapshot(skip_tensor_list)
         elif action == "reset_tensors":
-            return self._reset_tensors()
+            return self._reset_tensors(skip_tensor_list)
         elif action == "compare":
-            return self._compare(allow_quant_error=allow_quant_error)
+            return self._compare(
+                allow_quant_error=allow_quant_error,
+                skip_tensor_list=skip_tensor_list,
+            )
         elif action == "checksum":
-            return self._compute_checksum()
+            return self._compute_checksum(skip_tensor_list)
         else:
             raise Exception(f"Unsupported {action=}")
 
-    def _snapshot(self):
+    def _snapshot(self, skip_tensor_list: Optional[List[str]] = None):
         named_tensors = [
-            (name, param.data.detach().cpu()) for name, param in self._model_state()
+            (name, param.data.detach().cpu())
+            for name, param in self._model_state(skip_tensor_list)
         ]
         self._snapshot_tensors = dict(named_tensors)
         assert len(self._snapshot_tensors) == len(
             named_tensors
         ), f"should not have duplicated tensor name"
 
-    def _reset_tensors(self):
-        for name, param in self._model_state():
+    def _reset_tensors(self, skip_tensor_list: Optional[List[str]] = None):
+        for name, param in self._model_state(skip_tensor_list):
             if _is_non_persistent_buffer_name(name):
                 continue
             param.copy_(_random_like(param))
 
-    def _compare(self, allow_quant_error: bool = False):
+    def _compare(
+        self,
+        allow_quant_error: bool = False,
+        skip_tensor_list: Optional[List[str]] = None,
+    ):
         assert self._snapshot_tensors is not None
 
         quantized_set = _build_quantized_set(self._model_runner.model)
         skip_compare_names = {
             name
-            for name, param in self._model_state()
+            for name, param in self._model_state(skip_tensor_list)
             if getattr(param, "_skip_weight_check", False)
         }
         _check_tensors(
@@ -112,19 +130,23 @@ class WeightChecker:
                 self._snapshot_tensors, skip_compare_names, quantized_set
             ),
             actual_tensors=_build_check_entries(
-                dict(self._model_state()), skip_compare_names, quantized_set
+                dict(self._model_state(skip_tensor_list)),
+                skip_compare_names,
+                quantized_set,
             ),
             allow_quant_error=allow_quant_error,
         )
 
-    def _compute_checksum(self) -> Dict:
+    def _compute_checksum(
+        self, skip_tensor_list: Optional[List[str]] = None
+    ) -> Dict:
         torch.cuda.synchronize()
         start = time.perf_counter()
 
         quantized_set = _build_quantized_set(self._model_runner.model)
         skip_compare_names = {
             name
-            for name, param in self._model_state()
+            for name, param in self._model_state(skip_tensor_list)
             if getattr(param, "_skip_weight_check", False)
         }
 
@@ -132,7 +154,9 @@ class WeightChecker:
         # bf16 hash equal.
         checksums = {}
         for name, should_compare, comparable in _build_check_entries(
-            dict(self._model_state()), skip_compare_names, quantized_set
+            dict(self._model_state(skip_tensor_list)),
+            skip_compare_names,
+            quantized_set,
         ):
             if should_compare:
                 checksums[name] = _hash_tensor(comparable.dequantize().data)
@@ -169,9 +193,14 @@ class WeightChecker:
             size=dist.get_world_size() if dist.is_initialized() else 1,
         )
 
-    def _model_state(self):
-        yield from self._model_runner.model.named_parameters()
-        yield from self._model_runner.model.named_buffers()
+    def _model_state(self, skip_tensor_list: Optional[List[str]] = None):
+        skip_tensor_list = skip_tensor_list or ()
+        for name, tensor in self._model_runner.model.named_parameters():
+            if not any(pattern in name for pattern in skip_tensor_list):
+                yield name, tensor
+        for name, tensor in self._model_runner.model.named_buffers():
+            if not any(pattern in name for pattern in skip_tensor_list):
+                yield name, tensor
 
 
 def _hash_tensor(t: torch.Tensor) -> str:

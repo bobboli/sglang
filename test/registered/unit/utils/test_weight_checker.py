@@ -14,8 +14,9 @@
 """Unit tests for sglang/srt/utils/weight_checker.py."""
 
 import unittest
+from types import SimpleNamespace
 from typing import Iterable, List
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import torch
 from torch import nn
@@ -23,6 +24,10 @@ from torch import nn
 from sglang.srt.layers.quantization.fp8_utils import (
     quant_weight_ue8m0,
     transform_scale_ue8m0,
+)
+from sglang.srt.managers.io_struct import CheckWeightsReqInput
+from sglang.srt.managers.scheduler_components.weight_updater import (
+    SchedulerWeightUpdaterManager,
 )
 from sglang.srt.utils.weight_checker import (
     CheckEntry,
@@ -116,6 +121,14 @@ class _TinyModel(nn.Module):
         self.register_buffer("gate_proj_weight_fp32_cache", torch.full((8,), 1.41))
 
 
+class _ModelWithVisionTower(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.language_model = nn.Linear(4, 4, bias=False)
+        self.visual = nn.Linear(4, 4, bias=False)
+        self.requires_grad_(False)
+
+
 class _FakeModelRunner:
     """Minimal stand-in: WeightChecker touches `.model.named_parameters()`,
     `.model.named_buffers()`, plus parallelism attributes for the checksum action."""
@@ -137,6 +150,60 @@ class _FakeModelRunner:
         self.dp_size = dp_size
         self.pp_rank = pp_rank
         self.pp_size = pp_size
+
+
+class TestWeightCheckerSkipTensorList(CustomTestCase):
+
+    def test_empty_skip_pattern_is_rejected(self):
+        checker = WeightChecker(_FakeModelRunner(_ModelWithVisionTower()))
+
+        with self.assertRaisesRegex(ValueError, "must be non-empty"):
+            checker.handle("snapshot", skip_tensor_list=[""])
+
+    def test_skip_list_applies_to_snapshot_reset_and_compare(self):
+        model = _ModelWithVisionTower()
+        checker = WeightChecker(_FakeModelRunner(model))
+        language_before = model.language_model.weight.detach().clone()
+        visual_before = model.visual.weight.detach().clone()
+
+        checker.handle("snapshot", skip_tensor_list=["visual."])
+        self.assertEqual(
+            set(checker._snapshot_tensors), {"language_model.weight"}
+        )
+        checker.handle("reset_tensors", skip_tensor_list=["visual."])
+
+        self.assertFalse(torch.equal(model.language_model.weight, language_before))
+        torch.testing.assert_close(model.visual.weight, visual_before)
+
+        model.language_model.weight.copy_(language_before)
+        model.visual.weight.zero_()
+        checker.handle("compare", skip_tensor_list=["visual."])
+
+    def test_scheduler_forwards_skip_list_to_model_runner(self):
+        model_runner = Mock()
+        model_runner.check_weights.return_value = None
+        manager = SchedulerWeightUpdaterManager(
+            tp_worker=SimpleNamespace(model_runner=model_runner),
+            draft_worker=None,
+            tp_cpu_group=None,
+            memory_saver_adapter=None,
+            flush_cache=Mock(),
+            is_fully_idle=Mock(),
+        )
+
+        with patch("torch.distributed.get_world_size", return_value=1):
+            result = manager.check_weights(
+                CheckWeightsReqInput(
+                    action="snapshot", skip_tensor_list=["visual."]
+                )
+            )
+
+        self.assertTrue(result.success)
+        model_runner.check_weights.assert_called_once_with(
+            action="snapshot",
+            allow_quant_error=False,
+            skip_tensor_list=["visual."],
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -348,7 +348,9 @@ class SchedulerWeightUpdaterManager:
     def check_weights(self, recv_req: CheckWeightsReqInput):
         try:
             payload = self.tp_worker.model_runner.check_weights(
-                action=recv_req.action, allow_quant_error=recv_req.allow_quant_error
+                action=recv_req.action,
+                allow_quant_error=recv_req.allow_quant_error,
+                skip_tensor_list=recv_req.skip_tensor_list,
             )
 
             if self.draft_worker is not None:
@@ -357,6 +359,7 @@ class SchedulerWeightUpdaterManager:
                     draft_payload = draft_runner.check_weights(
                         action=recv_req.action,
                         allow_quant_error=recv_req.allow_quant_error,
+                        skip_tensor_list=recv_req.skip_tensor_list,
                     )
                     if payload is not None and draft_payload is not None:
                         payload = _merge_checksum_payloads(payload, draft_payload)
