@@ -96,6 +96,10 @@ def test_hash_topk_captures_logical_ids_and_masks_padding(monkeypatch):
     monkeypatch.setattr(
         topk_module, "get_global_experts_capturer", lambda: FakeCapturer()
     )
+    # Exercise the portable masking fallback even when the CPU CI image was
+    # built for CUDA and selected the CUDA platform at import time.
+    monkeypatch.setattr(topk_module, "_is_cuda", False)
+    monkeypatch.setattr(topk_module, "_can_fuse_padded_region", lambda *_args: False)
 
     topk = HashTopK(
         topk=2,
@@ -148,6 +152,85 @@ def test_hash_topk_capture_can_be_disabled(monkeypatch):
         )
 
     assert captured == []
+
+
+def test_deepseek_moe_forwards_padding_count_to_normal_topk(monkeypatch):
+    captured = {}
+
+    class FakeTopK:
+        def __call__(self, *args, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+    class FakeExperts:
+        moe_runner_config = SimpleNamespace(inplace=True)
+        quant_method = None
+
+        def __call__(self, hidden_states, _topk_output):
+            return hidden_states
+
+    moe = SimpleNamespace(
+        layer_id=3,
+        is_nextn=False,
+        experts=FakeExperts(),
+        _fuse_shared_experts_inside_sbo=False,
+        gate=lambda hidden_states, _allocator: torch.ones(hidden_states.shape[0], 8),
+        topk=FakeTopK(),
+        routed_scaling_factor=1.0,
+        _shared_expert_tp1=False,
+        tp_size=1,
+    )
+    forward_batch = SimpleNamespace(num_token_non_padded=torch.tensor(1))
+    monkeypatch.setattr(
+        "sglang.srt.models.deepseek_v2.maybe_fuse_routed_scale_and_shared_add",
+        lambda _experts, hidden_states, *_args: hidden_states,
+    )
+
+    DeepseekV2MoE.forward_normal(
+        moe,
+        torch.ones(2, 4),
+        input_ids_global=torch.tensor([0, 1]),
+        skip_shared_experts=True,
+        forward_batch=forward_batch,
+    )
+
+    assert captured["num_token_non_padded"] is forward_batch.num_token_non_padded
+
+
+def test_deepseek_moe_forwards_batch_to_dual_stream(monkeypatch):
+    captured = {}
+
+    def forward_normal_dual_stream(_hidden_states, *_args, **kwargs):
+        captured.update(kwargs)
+        return torch.empty(0)
+
+    moe = SimpleNamespace(
+        _enable_a2a_moe=False,
+        _can_dual_stream_graph=lambda *_args: False,
+        alt_stream=object(),
+        num_fused_shared_experts=0,
+        forward_normal_dual_stream=forward_normal_dual_stream,
+    )
+    forward_batch = SimpleNamespace(num_token_non_padded=torch.tensor(1))
+    monkeypatch.setattr(
+        "sglang.srt.layers.moe.mega_moe.should_use_mega_moe",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.models.deepseek_v2.get_is_capture_mode", lambda: True
+    )
+    monkeypatch.setattr(
+        "sglang.srt.models.deepseek_v2.get_flags",
+        lambda: SimpleNamespace(capture=SimpleNamespace(enable_torch_compile=False)),
+    )
+
+    DeepseekV2MoE.forward(
+        moe,
+        torch.ones(2, 4),
+        forward_batch=forward_batch,
+    )
+
+    assert captured["forward_batch"] is forward_batch
 
 
 def test_draft_hash_topk_capture_is_disabled():
