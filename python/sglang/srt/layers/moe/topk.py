@@ -1796,7 +1796,7 @@ def remap_topk_for_per_rank_shared_slots(
 
 
 def capture_routed_experts_if_allowed(
-    topk_config: TopKConfig,
+    allow_capture: bool,
     layer_id: Optional[int],
     topk_ids: torch.Tensor,
 ) -> None:
@@ -1805,7 +1805,7 @@ def capture_routed_experts_if_allowed(
     Routing all backends through here keeps the draft-side opt-out from being
     bypassed by an inlined capturer call.
     """
-    if not topk_config.allow_routed_experts_capture:
+    if not allow_capture:
         return
     if (cap := get_global_experts_capturer()) is not None:
         cap.capture(
@@ -1830,7 +1830,11 @@ def _post_process_topk_ids(
     fused_shared_experts_scaling_factor = (
         topk_config.fused_shared_experts_scaling_factor
     )
-    capture_routed_experts_if_allowed(topk_config, layer_id, topk_ids)
+    capture_routed_experts_if_allowed(
+        topk_config.allow_routed_experts_capture,
+        layer_id,
+        topk_ids,
+    )
     recorder_topk_ids = None
     if _is_cuda:
         # LP path: solve LP outside torch.compile (the solver contains an
