@@ -6,6 +6,7 @@ import torch
 
 from sglang.srt.eplb.expert_location_dispatch import ExpertLocationDispatchInfo
 from sglang.srt.layers.moe import hash_topk as hash_topk_module
+from sglang.srt.layers.moe import topk as topk_module
 from sglang.srt.layers.moe.hash_topk import HashTopK
 from sglang.srt.layers.moe.topk import (
     StandardTopKOutput,
@@ -83,7 +84,8 @@ def test_hash_topk_remaps_per_rank_fused_shared_slots(monkeypatch):
     assert recorded["topk_ids"].tolist() == [[0, 65], [63, 127]]
 
 
-def test_hash_topk_captures_logical_expert_ids(monkeypatch):
+def test_hash_topk_captures_logical_ids_and_masks_padding(monkeypatch):
+    """R3 must not replay a CUDA-graph padding row as a real route."""
     captured = {}
 
     class FakeCapturer:
@@ -92,13 +94,7 @@ def test_hash_topk_captures_logical_expert_ids(monkeypatch):
             captured["topk_ids"] = topk_indices.clone()
 
     monkeypatch.setattr(
-        hash_topk_module,
-        "capture_routed_experts_if_allowed",
-        lambda allow_capture, layer_id, topk_ids: (
-            FakeCapturer().capture(layer_id=layer_id, topk_indices=topk_ids)
-            if allow_capture
-            else None
-        ),
+        topk_module, "get_global_experts_capturer", lambda: FakeCapturer()
     )
 
     topk = HashTopK(
@@ -117,13 +113,14 @@ def test_hash_topk_captures_logical_expert_ids(monkeypatch):
             hidden_states=torch.empty(2, 4),
             router_logits=torch.ones(2, 8),
             input_ids=torch.tensor([0, 1], dtype=torch.int64),
+            num_token_non_padded=torch.tensor(1),
         )
 
-    assert output.topk_ids.tolist() == [[1, 5], [2, 7]]
+    assert output.topk_ids.tolist() == [[1, 5], [-1, -1]]
     assert captured["layer_id"] == 3
     assert torch.equal(
         captured["topk_ids"],
-        torch.tensor([[1, 5], [2, 7]], dtype=torch.int32),
+        torch.tensor([[1, 5], [-1, -1]], dtype=torch.int32),
     )
 
 
