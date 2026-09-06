@@ -19,6 +19,7 @@ from sglang.srt.layers.moe.topk import (
     TopKConfig,
     _mask_topk_ids_padded_region,
     _zero_topk_weights_padded_region,
+    capture_routed_experts_if_allowed,
     remap_topk_for_per_rank_shared_slots,
 )
 from sglang.srt.layers.moe.utils import has_per_rank_fused_shared_slots
@@ -58,6 +59,12 @@ class HashTopK(nn.Module):
 
         self.num_experts = num_experts
         self.topk = topk
+        self.topk_config = TopKConfig(
+            top_k=topk,
+            num_fused_shared_experts=num_fused_shared_experts,
+            routed_scaling_factor=routed_scaling_factor,
+            scoring_func=scoring_func,
+        )
         self.routed_scaling_factor = routed_scaling_factor
         self.num_fused_shared_experts = num_fused_shared_experts
         self.score_func = scoring_func
@@ -207,6 +214,13 @@ class HashTopK(nn.Module):
 
         if self.apply_routed_scaling_factor_on_output:
             topk_weights = topk_weights * self.routed_scaling_factor
+
+        capture_routed_experts_if_allowed(
+            topk_config=self.topk_config,
+            layer_id=self.layer_id,
+            topk_ids=topk_ids,
+            num_token_non_padded=num_token_non_padded,
+        )
 
         num_fused_shared_experts = self.num_fused_shared_experts
         log2phy_prob = None
