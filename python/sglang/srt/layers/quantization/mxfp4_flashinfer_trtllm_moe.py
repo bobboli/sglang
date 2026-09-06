@@ -45,11 +45,33 @@ _USE_OFFICIAL_SHUFFLE = get_bool_env_var(
 )
 
 
+_EXPERT_PARAMS = (
+    "w13_weight",
+    "w2_weight",
+    "w13_weight_scale_inv",
+    "w2_weight_scale_inv",
+)
+
+
+def _rebind(layer: Module, name: str, value: torch.Tensor) -> None:
+    """Replace a parameter payload while preserving its loader attributes.
+
+    The checkpoint and kernel layouts differ in dtype and extent, so loading
+    cannot write through one persistent ``Parameter``. The replacement still
+    needs the attributes installed by ``create_weights`` for the next update.
+    """
+    old = getattr(layer, name)
+    new = Parameter(value, requires_grad=False)
+    new.__dict__.update(old.__dict__)
+    setattr(layer, name, new)
+
+
 class Mxfp4FlashinferTrtllmMoEMethod:
 
     def __init__(self, fp8_method, prefix: str):
         self._fp8 = fp8_method
         self.prefix = prefix
+        self._kernel_layout: dict[str, torch.Tensor] = {}
         self.flashinfer_mxfp4_moe_precision = (
             get_exec().moe.flashinfer_mxfp4_moe_precision
         )
@@ -61,15 +83,16 @@ class Mxfp4FlashinferTrtllmMoEMethod:
         assert (
             swiglu_limit is not None
         ), f"swiglu_limit must be non-None for DeepSeek V4 (got {swiglu_limit!r})"
-        self._gemm1_clamp_limit_tensor = (
-            torch.full(
-                (layer.num_local_experts,),
-                swiglu_limit,
-                dtype=torch.float32,
-                device=layer.w13_weight.device,
-            )
-            if swiglu_limit is not None
-            else None
+        self._gemm1_clamp_limit_tensor = torch.full(
+            (layer.num_local_experts,),
+            swiglu_limit,
+            dtype=torch.float32,
+            device=layer.w13_weight.device,
+        )
+        layer.register_buffer(
+            "_gemm1_clamp_limit_tensor",
+            self._gemm1_clamp_limit_tensor,
+            persistent=False,
         )
 
     def create_weights(
@@ -79,11 +102,20 @@ class Mxfp4FlashinferTrtllmMoEMethod:
         hidden_size: int,
         intermediate_size_per_partition: int,
         params_dtype,
+        alloc_device=None,
         **extra_weight_attrs,
     ):
         from sglang.srt.layers.moe.fused_moe_triton import FusedMoeWeightScaleSupported
 
         fp4_block_k = 32
+
+        self._load_layout = (
+            num_experts,
+            hidden_size,
+            intermediate_size_per_partition,
+            params_dtype,
+            dict(extra_weight_attrs),
+        )
 
         w13_weight = Parameter(
             torch.empty(
@@ -91,6 +123,7 @@ class Mxfp4FlashinferTrtllmMoEMethod:
                 2 * intermediate_size_per_partition,
                 hidden_size // 2,
                 dtype=torch.int8,
+                device=alloc_device,
             ),
             requires_grad=False,
         )
@@ -100,6 +133,7 @@ class Mxfp4FlashinferTrtllmMoEMethod:
                 hidden_size,
                 intermediate_size_per_partition // 2,
                 dtype=torch.int8,
+                device=alloc_device,
             ),
             requires_grad=False,
         )
@@ -114,6 +148,7 @@ class Mxfp4FlashinferTrtllmMoEMethod:
                 2 * intermediate_size_per_partition,
                 hidden_size // fp4_block_k,
                 dtype=torch.float32,
+                device=alloc_device,
             ),
             requires_grad=False,
         )
@@ -123,6 +158,7 @@ class Mxfp4FlashinferTrtllmMoEMethod:
                 hidden_size,
                 intermediate_size_per_partition // fp4_block_k,
                 dtype=torch.float32,
+                device=alloc_device,
             ),
             requires_grad=False,
         )
@@ -135,6 +171,49 @@ class Mxfp4FlashinferTrtllmMoEMethod:
         layer.register_parameter("w2_weight_scale_inv", w2_weight_scale)
         set_weight_attrs(w2_weight_scale, scale_attrs)
 
+    def _install_kernel_layout(
+        self, layer: Module, name: str, value: torch.Tensor
+    ) -> None:
+        """Publish a kernel tensor without invalidating captured graph addresses.
+
+        CUDA graphs retain the addresses used during capture. Once a kernel
+        layout has been established, later repacks must copy into that storage.
+        """
+        established = self._kernel_layout.get(name)
+        if (
+            established is not None
+            and established.shape == value.shape
+            and established.dtype == value.dtype
+        ):
+            established.copy_(value)
+            value = established
+        self._kernel_layout[name] = value
+        _rebind(layer, name, value)
+
+    def restore_weights_before_loading(self, layer: Module) -> None:
+        """Restore the checkpoint layout before loading a new packed update.
+
+        Writing packed MXFP4 values into the shuffled kernel parameters would
+        silently cast scale bytes and use the wrong extent for the second GEMM.
+        """
+        if not getattr(layer, "_mxfp4_kernel_layout", False):
+            return
+
+        device = layer.w13_weight.device
+        num_experts, hidden_size, intermediate, params_dtype, attrs = self._load_layout
+        for name in _EXPERT_PARAMS:
+            delattr(layer, name)
+        self.create_weights(
+            layer,
+            num_experts,
+            hidden_size,
+            intermediate,
+            params_dtype,
+            alloc_device=device,
+            **attrs,
+        )
+        layer._mxfp4_kernel_layout = False
+
     def process_weights_after_loading(self, layer: Module) -> None:
         from sglang.srt.layers.quantization.utils import reorder_w1w3_to_w3w1
 
@@ -146,8 +225,8 @@ class Mxfp4FlashinferTrtllmMoEMethod:
         w13_w, w13_s = reorder_w1w3_to_w3w1(
             layer.w13_weight.data, layer.w13_weight_scale_inv.data
         )
-        layer.w13_weight = Parameter(w13_w, requires_grad=False)
-        layer.w13_weight_scale_inv = Parameter(w13_s, requires_grad=False)
+        _rebind(layer, "w13_weight", w13_w)
+        _rebind(layer, "w13_weight_scale_inv", w13_s)
 
         log_info_on_rank0(
             logger,
@@ -221,21 +300,24 @@ class Mxfp4FlashinferTrtllmMoEMethod:
                     shuffle_matrix_sf_a(w2_scale[i].view(torch.uint8), epilogue_tile_m)
                 )
 
-        layer.w13_weight = Parameter(torch.stack(g1_w), requires_grad=False)
-        layer.w13_weight_scale_inv = Parameter(
+        self._install_kernel_layout(layer, "w13_weight", torch.stack(g1_w))
+        self._install_kernel_layout(
+            layer,
+            "w13_weight_scale_inv",
             torch.stack(g1_s)
             .view(torch.float8_e4m3fn)
             .reshape(num_experts, w13.shape[1], -1),
-            requires_grad=False,
         )
-        layer.w2_weight = Parameter(torch.stack(g2_w), requires_grad=False)
-        layer.w2_weight_scale_inv = Parameter(
+        self._install_kernel_layout(layer, "w2_weight", torch.stack(g2_w))
+        self._install_kernel_layout(
+            layer,
+            "w2_weight_scale_inv",
             torch.stack(g2_s)
             .view(torch.float8_e4m3fn)
             .reshape(num_experts, w2.shape[1], -1),
-            requires_grad=False,
         )
 
+        layer._mxfp4_kernel_layout = True
         self._register_static_scale_ones(layer)
         torch.cuda.empty_cache()
 
